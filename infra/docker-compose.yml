@@ -1,0 +1,51 @@
+services:
+  rabbitmq:
+    image: rabbitmq:3-management
+    container_name: trading-rabbitmq
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+
+  postgres:
+    image: postgres:16
+    container_name: trading-postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: trading
+      POSTGRES_PASSWORD: trading
+      POSTGRES_DB: trading
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  order-service:
+    build:
+      context: ../services/order
+    container_name: trading-order
+    ports:
+      - "8000:8000"
+    environment:
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+      ORDER_QUEUE: orders
+      DATABASE_URL: postgresql://trading:trading@postgres:5432/trading
+    depends_on:
+      - rabbitmq
+      - postgres
+
+  execution-service:
+    build:
+      context: ../services/execution
+    container_name: trading-execution
+    environment:
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+      ORDER_QUEUE: orders
+      DATABASE_URL: postgresql://trading:trading@postgres:5432/trading
+    depends_on:
+      - rabbitmq
+      - postgres
+
+volumes:
+  pgdata:
