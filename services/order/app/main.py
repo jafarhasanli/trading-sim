@@ -41,6 +41,29 @@ def publish_order(event: dict) -> None:
     connection.close()
 
 
+def _require_db():
+    if not DATABASE_URL:
+        raise HTTPException(status_code=500, detail="DATABASE_URL is not set for order-service")
+
+
+def ensure_order_status_table(conn: psycopg.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS order_status (
+            order_id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            symbol TEXT NOT NULL,
+            side TEXT NOT NULL,
+            qty DOUBLE PRECISION NOT NULL,
+            status TEXT NOT NULL,
+            reason TEXT,
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+        """
+    )
+    conn.commit()
+
+
 @app.get("/health")
 def health():
     return {"status": "ok"}
@@ -48,6 +71,8 @@ def health():
 
 @app.post("/orders")
 def create_order(req: OrderRequest):
+    _require_db()
+
     order_id = f"ord_{uuid.uuid4().hex}"
     event = {
         "event_id": f"evt_{uuid.uuid4().hex}",
@@ -59,21 +84,32 @@ def create_order(req: OrderRequest):
         "ts": datetime.now(timezone.utc).isoformat(),
     }
 
+    # 1) Write ACCEPTED to DB first (so we can query status immediately)
+    try:
+        with psycopg.connect(DATABASE_URL) as conn:
+            ensure_order_status_table(conn)
+            conn.execute(
+                """
+                INSERT INTO order_status (order_id, user_id, symbol, side, qty, status, reason)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (order_id) DO NOTHING
+                """,
+                (order_id, req.user_id, req.symbol, req.side, float(req.qty), "ACCEPTED", None),
+            )
+            conn.commit()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to write order_status: {e}")
+
+    # 2) Publish event to queue
     try:
         publish_order(event)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to publish order: {e}")
 
-    # NOTE: At this stage we still return ACCEPTED immediately (async processing)
     return {"order_id": order_id, "status": "ACCEPTED"}
 
 
-# ---------------- Phase 1.2: Read APIs ----------------
-
-def _require_db():
-    if not DATABASE_URL:
-        raise HTTPException(status_code=500, detail="DATABASE_URL is not set for order-service")
-
+# -------- Phase 1.2 read endpoints (unchanged) --------
 
 @app.get("/portfolio/{user_id}")
 def get_portfolio(user_id: str):
@@ -155,14 +191,38 @@ def get_rejections(user_id: str):
         return {
             "user_id": user_id,
             "rejections": [
-                {
-                    "order_id": r[0],
-                    "symbol": r[1],
-                    "side": r[2],
-                    "qty": r[3],
-                    "reason": r[4],
-                    "ts": str(r[5]),
-                }
+                {"order_id": r[0], "symbol": r[1], "side": r[2], "qty": r[3], "reason": r[4], "ts": str(r[5])}
                 for r in rows
             ],
+        }
+
+
+# ---------------- Phase 1.3: order status endpoint ----------------
+
+@app.get("/orders/{order_id}")
+def get_order_status(order_id: str):
+    _require_db()
+    with psycopg.connect(DATABASE_URL) as conn:
+        ensure_order_status_table(conn)
+        row = conn.execute(
+            """
+            SELECT order_id, user_id, symbol, side, qty, status, reason, updated_at
+            FROM order_status
+            WHERE order_id=%s
+            """,
+            (order_id,),
+        ).fetchone()
+
+        if not row:
+            raise HTTPException(status_code=404, detail="Order not found")
+
+        return {
+            "order_id": row[0],
+            "user_id": row[1],
+            "symbol": row[2],
+            "side": row[3],
+            "qty": row[4],
+            "status": row[5],
+            "reason": row[6],
+            "updated_at": str(row[7]),
         }

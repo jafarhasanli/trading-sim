@@ -40,7 +40,6 @@ def ensure_schema(conn: psycopg.Connection) -> None:
             PRIMARY KEY (user_id, symbol)
         );
 
-        -- Phase 1.2: store rejected orders
         CREATE TABLE IF NOT EXISTS rejections (
             order_id TEXT PRIMARY KEY,
             user_id TEXT NOT NULL,
@@ -49,6 +48,18 @@ def ensure_schema(conn: psycopg.Connection) -> None:
             qty DOUBLE PRECISION NOT NULL,
             reason TEXT NOT NULL,
             ts TIMESTAMPTZ NOT NULL
+        );
+
+        -- Phase 1.3: order lifecycle tracking
+        CREATE TABLE IF NOT EXISTS order_status (
+            order_id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            symbol TEXT NOT NULL,
+            side TEXT NOT NULL,
+            qty DOUBLE PRECISION NOT NULL,
+            status TEXT NOT NULL,
+            reason TEXT,
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         );
         """
     )
@@ -106,6 +117,37 @@ def record_rejection(conn: psycopg.Connection, order_event: dict, reason: str) -
             reason,
             datetime.now(timezone.utc).isoformat(),
         ),
+    )
+
+
+def upsert_order_status_if_missing(conn: psycopg.Connection, order_event: dict) -> None:
+    # If order-service didn't insert for some reason, execution will still create it.
+    conn.execute(
+        """
+        INSERT INTO order_status (order_id, user_id, symbol, side, qty, status, reason)
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
+        ON CONFLICT (order_id) DO NOTHING
+        """,
+        (
+            order_event["order_id"],
+            order_event["user_id"],
+            order_event["symbol"],
+            order_event["side"],
+            float(order_event["qty"]),
+            "ACCEPTED",
+            None,
+        ),
+    )
+
+
+def set_order_status(conn: psycopg.Connection, order_id: str, status: str, reason: str | None) -> None:
+    conn.execute(
+        """
+        UPDATE order_status
+        SET status=%s, reason=%s, updated_at=NOW()
+        WHERE order_id=%s
+        """,
+        (status, reason, order_id),
     )
 
 
@@ -180,19 +222,26 @@ def process_order(conn: psycopg.Connection, order_event: dict) -> None:
         with conn.transaction():
             ensure_user_rows(conn, user_id, symbol)
 
+            # Make sure order_status row exists
+            upsert_order_status_if_missing(conn, order_event)
+
             # -------- Risk checks --------
             if side == "BUY":
                 cash = get_cash_balance(conn, user_id)
                 cost = qty * price
                 if cash < cost:
-                    record_rejection(conn, order_event, f"INSUFFICIENT_CASH cash={cash} cost={cost}")
+                    reason = f"INSUFFICIENT_CASH cash={cash} cost={cost}"
+                    record_rejection(conn, order_event, reason)
+                    set_order_status(conn, order_id, "REJECTED", reason)
                     print(f"[EXECUTION] REJECTED order_id={order_id} reason=INSUFFICIENT_CASH")
                     return
 
             if side == "SELL":
                 pos = get_position_qty(conn, user_id, symbol)
                 if pos < qty:
-                    record_rejection(conn, order_event, f"INSUFFICIENT_POSITION pos={pos} sell_qty={qty}")
+                    reason = f"INSUFFICIENT_POSITION pos={pos} sell_qty={qty}"
+                    record_rejection(conn, order_event, reason)
+                    set_order_status(conn, order_id, "REJECTED", reason)
                     print(f"[EXECUTION] REJECTED order_id={order_id} reason=INSUFFICIENT_POSITION")
                     return
 
@@ -204,11 +253,14 @@ def process_order(conn: psycopg.Connection, order_event: dict) -> None:
                 """,
                 trade,
             )
-            apply_portfolio_updates(conn, order_event, price)
 
-        print(f"[EXECUTION] Trade+Portfolio committed for order_id={order_id}")
+            apply_portfolio_updates(conn, order_event, price)
+            set_order_status(conn, order_id, "FILLED", None)
+
+        print(f"[EXECUTION] FILLED order_id={order_id}")
 
     except psycopg.errors.UniqueViolation:
+        # duplicate order -> already processed
         print(f"[EXECUTION] Duplicate order detected (idempotent). order_id={order_id}")
     except Exception as e:
         print(f"[EXECUTION] ERROR processing order_id={order_id}: {e}")
@@ -252,7 +304,6 @@ def main():
         with psycopg.connect(DATABASE_URL) as conn:
             process_order(conn, event)
 
-        # ACK even if rejected, otherwise it retries forever
         ch.basic_ack(delivery_tag=method.delivery_tag)
 
     channel.basic_consume(queue=ORDER_QUEUE, on_message_callback=on_message)
