@@ -21,6 +21,26 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
 
+  redis:
+    image: redis:7
+    container_name: trading-redis
+    ports:
+      - "6379:6379"
+
+  market-service:
+    build:
+      context: ../services/market
+    container_name: trading-market
+    ports:
+      - "9000:9000"
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      MARKET_SYMBOL: BTCUSDT
+      START_PRICE: 100.0
+      SLEEP_SECONDS: 2
+    depends_on:
+      - redis
+
   order-service:
     build:
       context: ../services/order
@@ -43,9 +63,13 @@ services:
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
       ORDER_QUEUE: orders
       DATABASE_URL: postgresql://trading:trading@postgres:5432/trading
+      REDIS_URL: redis://redis:6379/0
+      MARKET_SYMBOL: BTCUSDT
     depends_on:
       - rabbitmq
       - postgres
+      - redis
+      - market-service
 
 volumes:
   pgdata:

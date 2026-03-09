@@ -6,11 +6,13 @@ from datetime import datetime, timezone
 
 import pika
 import psycopg
+import redis
 
 RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://guest:guest@localhost:5672/")
 ORDER_QUEUE = os.getenv("ORDER_QUEUE", "orders")
 DATABASE_URL = os.getenv("DATABASE_URL")
-
+REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
+MARKET_SYMBOL = os.getenv("MARKET_SYMBOL", "BTCUSDT")
 
 def ensure_schema(conn: psycopg.Connection) -> None:
     conn.execute(
@@ -197,9 +199,20 @@ def apply_portfolio_updates(conn: psycopg.Connection, order_event: dict, price: 
             (qty, user_id, symbol),
         )
 
+def get_market_price() -> float:
+    try:
+        client = redis.from_url(REDIS_URL, decode_responses=True)
+        value = client.get(f"price:{MARKET_SYMBOL}")
+        if value is None:
+            return 100.0
+        return float(value)
+    except Exception as e:
+        print(f"[EXECUTION] Redis price read failed: {e}. Falling back to 100.0")
+        return 100.0
+
 
 def process_order(conn: psycopg.Connection, order_event: dict) -> None:
-    price = 100.0  # Phase 2-də Redis market price olacaq
+    price = get_market_price() # Phase 2-də Redis market price olacaq  ---- artiq oldu
 
     user_id = order_event["user_id"]
     symbol = order_event["symbol"]
