@@ -1,0 +1,30 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: execution-service
+  namespace: trading-sim
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: execution-service
+  template:
+    metadata:
+      labels:
+        app: execution-service
+    spec:
+      containers:
+        - name: execution-service
+          image: infra-execution-service:latest
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: RABBITMQ_URL
+              value: "amqp://guest:guest@rabbitmq:5672/"
+            - name: ORDER_QUEUE
+              value: "orders"
+            - name: DATABASE_URL
+              value: "postgresql://trading:trading@postgres:5432/trading"
+            - name: REDIS_URL
+              value: "redis://redis:6379/0"
+            - name: MARKET_SYMBOL
+              value: "BTCUSDT"

@@ -1,0 +1,42 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: market-service
+  namespace: trading-sim
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: market-service
+  template:
+    metadata:
+      labels:
+        app: market-service
+    spec:
+      containers:
+        - name: market-service
+          image: infra-market-service:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 9000
+          env:
+            - name: REDIS_URL
+              value: "redis://redis:6379/0"
+            - name: MARKET_SYMBOL
+              value: "BTCUSDT"
+            - name: START_PRICE
+              value: "100.0"
+            - name: SLEEP_SECONDS
+              value: "2"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: market-service
+  namespace: trading-sim
+spec:
+  selector:
+    app: market-service
+  ports:
+    - port: 9000
+      targetPort: 9000
