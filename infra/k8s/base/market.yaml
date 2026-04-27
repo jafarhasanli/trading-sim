@@ -23,7 +23,7 @@ spec:
             - name: REDIS_URL
               value: "redis://redis:6379/0"
             - name: MARKET_SYMBOL
-              value: "BTCUSDT"
+              value: "BTCUSDT,ETHUSDT,BNBUSDT,SOLUSDT,ADAUSDT,XRPUSDT"
             - name: START_PRICE
               value: "100.0"
             - name: SLEEP_SECONDS

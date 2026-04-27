@@ -1,21 +1,42 @@
 import json
 import os
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 import pika
 import psycopg
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from prometheus_client import Counter, generate_latest
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from passlib.context import CryptContext
+from jose import jwt, JWTError
+from fastapi.middleware.cors import CORSMiddleware
+
 
 RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://guest:guest@localhost:5672/")
 ORDER_QUEUE = os.getenv("ORDER_QUEUE", "orders")
 DATABASE_URL = os.getenv("DATABASE_URL")
+JWT_SECRET = os.getenv("JWT_SECRET", "dev-secret-change-me")
+JWT_ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24
 
 app = FastAPI(title="Order Service")
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:3001",
+        "http://127.0.0.1:3001",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
+security = HTTPBearer()
 
 # ---------------- Metrics ----------------
 orders_created = Counter(
@@ -36,6 +57,17 @@ class OrderRequest(BaseModel):
     symbol: str = Field(min_length=1)
     side: str = Field(pattern="^(BUY|SELL)$")
     qty: float = Field(gt=0)
+
+
+
+class RegisterRequest(BaseModel):
+    username: str = Field(min_length=3)
+    password: str = Field(min_length=6)
+
+
+class LoginRequest(BaseModel):
+    username: str = Field(min_length=3)
+    password: str = Field(min_length=6)
 
 # ---------------- RabbitMQ ----------------
 def publish_order(event: dict) -> None:
@@ -77,6 +109,52 @@ def ensure_order_status_table(conn: psycopg.Connection) -> None:
         """
     )
     conn.commit()
+
+
+def ensure_users_table(conn: psycopg.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS users (
+            user_id TEXT PRIMARY KEY,
+            username TEXT UNIQUE NOT NULL,
+            password_hash TEXT NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+        """
+    )
+    conn.commit()
+
+
+
+
+# ---------------- Auth helper ----------------
+def hash_password(password: str) -> str:
+    return pwd_context.hash(password)
+
+
+def verify_password(password: str, password_hash: str) -> bool:
+    return pwd_context.verify(password, password_hash)
+
+
+def create_access_token(data: dict) -> str:
+    to_encode = data.copy()
+    expire = datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    to_encode.update({"exp": expire})
+    return jwt.encode(to_encode, JWT_SECRET, algorithm=JWT_ALGORITHM)
+
+
+def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    token = credentials.credentials
+
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        return {
+            "user_id": payload.get("user_id"),
+            "username": payload.get("username"),
+        }
+    except JWTError:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+
 
 # ---------------- Health ----------------
 @app.get("/health")
@@ -276,3 +354,77 @@ def get_order_status(order_id: str):
 def metrics():
     http_requests.labels(method="GET", endpoint="/metrics").inc()
     return Response(generate_latest(), media_type="text/plain")
+
+
+@app.post("/auth/register")
+def register(req: RegisterRequest):
+    _require_db()
+
+    user_id = f"usr_{uuid.uuid4().hex}"
+    password_hash = hash_password(req.password)
+
+    try:
+        with psycopg.connect(DATABASE_URL) as conn:
+            ensure_users_table(conn)
+
+            conn.execute(
+                """
+                INSERT INTO users (user_id, username, password_hash)
+                VALUES (%s, %s, %s)
+                """,
+                (user_id, req.username, password_hash),
+            )
+            conn.commit()
+
+        return {
+            "user_id": user_id,
+            "username": req.username,
+            "message": "User registered successfully"
+        }
+
+    except psycopg.errors.UniqueViolation:
+        raise HTTPException(status_code=400, detail="Username already exists")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Registration failed: {e}")
+
+
+@app.post("/auth/login")
+def login(req: LoginRequest):
+    _require_db()
+
+    with psycopg.connect(DATABASE_URL) as conn:
+        ensure_users_table(conn)
+
+        row = conn.execute(
+            """
+            SELECT user_id, username, password_hash
+            FROM users
+            WHERE username=%s
+            """,
+            (req.username,),
+        ).fetchone()
+
+        if not row:
+            raise HTTPException(status_code=401, detail="Invalid username or password")
+
+        user_id, username, password_hash = row
+
+        if not verify_password(req.password, password_hash):
+            raise HTTPException(status_code=401, detail="Invalid username or password")
+
+        token = create_access_token({
+            "user_id": user_id,
+            "username": username,
+        })
+
+        return {
+            "access_token": token,
+            "token_type": "bearer",
+            "user_id": user_id,
+            "username": username
+        }
+
+
+@app.get("/users/me")
+def users_me(current_user: dict = Depends(get_current_user)):
+    return current_user

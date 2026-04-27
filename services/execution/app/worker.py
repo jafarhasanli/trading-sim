@@ -199,10 +199,10 @@ def apply_portfolio_updates(conn: psycopg.Connection, order_event: dict, price: 
             (qty, user_id, symbol),
         )
 
-def get_market_price() -> float:
+def get_market_price(symbol: str) -> float:
     try:
         client = redis.from_url(REDIS_URL, decode_responses=True)
-        value = client.get(f"price:{MARKET_SYMBOL}")
+        value = client.get(f"price:{symbol}")
         if value is None:
             return 100.0
         return float(value)
@@ -212,13 +212,17 @@ def get_market_price() -> float:
 
 
 def process_order(conn: psycopg.Connection, order_event: dict) -> None:
-    price = get_market_price() # Phase 2-də Redis market price olacaq  ---- artiq oldu
+    # price = get_market_price() # Phase 2-də Redis market price olacaq  ---- artiq oldu
+    #symbol = order_event["symbol"]
+    
 
     user_id = order_event["user_id"]
     symbol = order_event["symbol"]
     side = order_event["side"]
     qty = float(order_event["qty"])
     order_id = order_event["order_id"]
+
+    price = get_market_price(symbol)
 
     trade = {
         "trade_id": f"trd_{uuid.uuid4().hex}",

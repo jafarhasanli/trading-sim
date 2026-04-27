@@ -35,7 +35,7 @@ services:
       - "9000:9000"
     environment:
       REDIS_URL: redis://redis:6379/0
-      MARKET_SYMBOL: BTCUSDT
+      MARKET_SYMBOL: BTCUSDT,ETHUSDT,BNBUSDT,SOLUSDT,ADAUSDT,XRPUSDT
       START_PRICE: 100.0
       SLEEP_SECONDS: 2
     depends_on:

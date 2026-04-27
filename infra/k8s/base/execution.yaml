@@ -28,3 +28,8 @@ spec:
               value: "redis://redis:6379/0"
             - name: MARKET_SYMBOL
               value: "BTCUSDT"
+          resources:
+            requests:
+              cpu: "100m"
+            limits:
+              cpu: "500m"
