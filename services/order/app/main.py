@@ -204,7 +204,7 @@ def create_order(req: OrderRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to publish order: {e}")
 
-    # 3) METRICS 🔥
+    # 3) METRICS
     orders_created.inc()
 
     return {"order_id": order_id, "status": "ACCEPTED"}
