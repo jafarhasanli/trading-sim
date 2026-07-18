@@ -2,6 +2,8 @@
 
 Microservices-based trading simulation platform built as an BSc thesis project. The system demonstrates asynchronous order processing, service separation, persistence, observability, containerization, Kubernetes deployment, autoscaling, and load testing in a controlled trading domain.
 
+🎥 **Project Demo:** https://youtu.be/ZWUR9AhbOVU
+
 This is an educational distributed systems prototype. It does not connect to a real exchange, does not process real money, and does not implement a production financial order book.
 
 ![Trading dashboard](images/ui_main_trading_dashboard.png)
